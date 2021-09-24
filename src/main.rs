@@ -14,7 +14,6 @@ use stm32f1xx_hal::rcc::RccExt;
 use stm32f1xx_hal::gpio::{GpioExt, Output, PushPull};
 
 use embedded_hal::digital::v2::OutputPin;
-use embedded_hal::digital::v2::StatefulOutputPin;
 
 use cortex_m::asm;
 use cortex_m_semihosting::hprintln;
@@ -22,6 +21,10 @@ use usb_device::device::{UsbDevice, UsbDeviceBuilder, UsbVidPid};
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
 use core::panic::PanicInfo;
+
+use crate::adc::Adc1;
+
+mod adc;
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
@@ -54,6 +57,7 @@ const APP: () = {
 		serial: SerialPort<'static, UsbBusType>,
 		led: PC13<Output<PushPull>>,
 		timer: CountDownTimer<TIM2>,
+		adc1: Adc1,
 	}
 
 	#[init]
@@ -77,12 +81,17 @@ const APP: () = {
 
 		// Start the timer.
 		let mut timer = stm32f1xx_hal::timer::Timer::tim2(cx.device.TIM2, &clocks, &mut rcc.apb1)
-			.start_count_down(100.hz());
+			.start_count_down(10.hz());
 		timer.listen(stm32f1xx_hal::timer::Event::Update);
 
 		// Turn on the LED.
 		let mut led = gpioc.pc13.into_push_pull_output(&mut gpioc.crh);
 		led.set_low().ok();
+
+		// Enable ADC.
+		let adc1 = Adc1::init(cx.device.ADC1, &mut rcc.apb2, &clocks);
+		adc1.set_channel(adc::Channel1);
+		adc1.set_sample_time(adc::Cycles239_5);
 
 		// BluePill board has a pull-up resistor on the D+ line.
 		// Pull the D+ pin down to send a RESET condition to the USB bus.
@@ -114,27 +123,35 @@ const APP: () = {
 			.device_class(USB_CLASS_CDC)
 			.build();
 
-		init::LateResources { usb_dev, serial, led, timer }
+		init::LateResources { usb_dev, serial, led, timer, adc1 }
 	}
 
-	#[task(binds = TIM2, resources = [serial, led, timer])]
-	fn timer2(cx: timer2::Context) {
-		if cx.resources.led.is_set_high().unwrap() {
-			cx.resources.led.set_low().ok();
-		} else {
+	#[task(binds = ADC1_2, resources = [serial, adc1, led])]
+	fn adc1_2(cx: adc1_2::Context) {
+		if let Some(data) = cx.resources.adc1.read() {
+			cx.resources.serial.write(&data.to_le_bytes()).unwrap();
 			cx.resources.led.set_high().ok();
 		}
-		cx.resources.serial.write(&[0]).ok();
+	}
+
+	#[task(binds = TIM2, resources = [serial, led, adc1, timer])]
+	fn timer2(cx: timer2::Context) {
+		cx.resources.adc1.start_convert();
+		cx.resources.led.set_low().ok();
 		cx.resources.timer.clear_update_interrupt_flag();
 	}
 
 	#[task(binds = USB_HP_CAN_TX, resources = [usb_dev, serial, led])]
-	fn usb_tx(cx: usb_tx::Context) {
+	fn usb_hp(cx: usb_hp::Context) {
+		let mut buffer = [0; 128];
+		while cx.resources.serial.read(&mut buffer).is_ok() {}
 		cx.resources.usb_dev.poll(&mut [cx.resources.serial]);
 	}
 
 	#[task(binds = USB_LP_CAN_RX0, resources = [usb_dev, serial, led])]
-	fn usb_rx0(cx: usb_rx0::Context) {
+	fn usb_lp(cx: usb_lp::Context) {
+		let mut buffer = [0; 128];
+		while cx.resources.serial.read(&mut buffer).is_ok() {}
 		cx.resources.usb_dev.poll(&mut [cx.resources.serial]);
 	}
 };

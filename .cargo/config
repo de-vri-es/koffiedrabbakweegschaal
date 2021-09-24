@@ -1,0 +1,6 @@
+[build]
+target = "thumbv7m-none-eabi" # Cortex-M3
+
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+rustflags = ["-C", "link-arg=-Tlink.x"]
+runner = "arm-none-eabi-gdb -x openocd.gdb"
