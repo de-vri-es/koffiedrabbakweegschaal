@@ -1,4 +1,6 @@
-use stm32f1xx_hal::{pac::ADC1, rcc::{APB2, Enable, Reset}, rcc::Clocks};
+use stm32f1xx_hal::device::RCC;
+use stm32f1xx_hal::pac::ADC1;
+use stm32f1xx_hal::rcc::{Enable, Reset, Clocks};
 use cortex_m::asm;
 
 pub struct Adc1 {
@@ -40,9 +42,11 @@ pub enum SampleTime {
 pub use SampleTime::*;
 
 impl Adc1 {
-	pub fn init(adc1: ADC1, apb2: &mut APB2, clocks: &Clocks) -> Self {
-		ADC1::enable(apb2);
-		ADC1::reset(apb2);
+	pub fn init(adc1: ADC1, clocks: &Clocks) -> Self {
+		unsafe {
+			ADC1::enable(&*RCC::ptr());
+			ADC1::reset(&*RCC::ptr());
+		}
 
 		adc1.cr1.modify(|_, w|
 			w

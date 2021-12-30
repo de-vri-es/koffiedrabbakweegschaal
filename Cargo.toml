@@ -1,14 +1,21 @@
 [package]
-name = "usb-adc"
+name = "koffiedrabbakweegschaal"
 version = "0.1.0"
 edition = "2018"
 
 [dependencies]
-cortex-m-rtic = "0.5.8"
+cortex-m-rtic = "1.0.0"
 cortex-m = "0.7.0"
 cortex-m-semihosting = "0.3.7"
-cortex-m-rt = "0.6.0"
+cortex-m-rt = "0.7.0"
 embedded-hal = "0.2.6"
-stm32f1xx-hal = { version = "0.7.0", features = ["rt", "stm32f103", "medium", "stm32-usbd"] }
+stm32f1xx-hal = { version = "0.8.0", features = ["rt", "stm32f103", "medium", "stm32-usbd"] }
 usbd-serial = "0.1.1"
 usb-device = "0.2.8"
+
+[profile.dev]
+opt-level = 3
+lto = true
+
+[profile.release]
+lto = true

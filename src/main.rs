@@ -13,8 +13,6 @@ use stm32f1xx_hal::flash::FlashExt;
 use stm32f1xx_hal::rcc::RccExt;
 use stm32f1xx_hal::gpio::{GpioExt, Output, PushPull};
 
-use embedded_hal::digital::v2::OutputPin;
-
 use cortex_m::asm;
 use cortex_m_semihosting::hprintln;
 use usb_device::device::{UsbDevice, UsbDeviceBuilder, UsbVidPid};
@@ -28,7 +26,6 @@ mod adc;
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-
 	match (info.location(), info.message()) {
 		(None, None) => hprintln!("program panicked").ok(),
 		(Some(location), Some(message)) => hprintln!("program panicked at {}:{}: {}", location.file(), location.line(), message).ok(),
@@ -51,23 +48,35 @@ fn panic(info: &PanicInfo) -> ! {
 }
 
 #[app(device = stm32f1xx_hal::stm32, peripherals = true)]
-const APP: () = {
-	struct Resources {
+mod app {
+	use super::*;
+
+	#[shared]
+	struct Shared {
+		#[lock_free]
 		usb_dev: UsbDevice<'static, UsbBusType>,
+		#[lock_free]
 		serial: SerialPort<'static, UsbBusType>,
+		#[lock_free]
 		led: PC13<Output<PushPull>>,
+		#[lock_free]
 		timer: CountDownTimer<TIM2>,
+		#[lock_free]
 		adc1: Adc1,
 	}
 
+	#[local]
+	struct Local {
+	}
+
 	#[init]
-	fn init(cx: init::Context) -> init::LateResources {
+	fn init(cx: init::Context) -> (Shared, Local, init::Monotonics) {
 		static mut USB_BUS: Option<bus::UsbBusAllocator<UsbBusType>> = None;
 
 		// Set the clock speed.
 		let mut flash = cx.device.FLASH.constrain();
-		let mut rcc = cx.device.RCC.constrain();
-		let mut gpioc = cx.device.GPIOC.split(&mut rcc.apb2);
+		let rcc = cx.device.RCC.constrain();
+		let mut gpioc = cx.device.GPIOC.split();
 
 		let clocks = rcc
 			.cfgr
@@ -80,16 +89,16 @@ const APP: () = {
 		assert!(clocks.usbclk_valid());
 
 		// Start the timer.
-		let mut timer = stm32f1xx_hal::timer::Timer::tim2(cx.device.TIM2, &clocks, &mut rcc.apb1)
+		let mut timer = stm32f1xx_hal::timer::Timer::tim2(cx.device.TIM2, &clocks)
 			.start_count_down(10.hz());
 		timer.listen(stm32f1xx_hal::timer::Event::Update);
 
 		// Turn on the LED.
 		let mut led = gpioc.pc13.into_push_pull_output(&mut gpioc.crh);
-		led.set_low().ok();
+		led.set_low();
 
 		// Enable ADC.
-		let adc1 = Adc1::init(cx.device.ADC1, &mut rcc.apb2, &clocks);
+		let adc1 = Adc1::init(cx.device.ADC1, &clocks);
 		adc1.set_channel(adc::Channel1);
 		adc1.set_sample_time(adc::Cycles239_5);
 
@@ -97,9 +106,9 @@ const APP: () = {
 		// Pull the D+ pin down to send a RESET condition to the USB bus.
 		// This forced reset is needed only for development, without it host
 		// will not reset your device when you upload new firmware.
-		let mut gpioa = cx.device.GPIOA.split(&mut rcc.apb2);
+		let mut gpioa = cx.device.GPIOA.split();
 		let mut usb_dp = gpioa.pa12.into_push_pull_output(&mut gpioa.crh);
-		usb_dp.set_low().unwrap();
+		usb_dp.set_low();
 		asm::delay(clocks.sysclk().0 / 100);
 
 		let usb_dm = gpioa.pa11;
@@ -112,46 +121,50 @@ const APP: () = {
 			pin_dp: usb_dp,
 		};
 
-		*USB_BUS = Some(UsbBus::new(usb));
+		let usb_bus = unsafe {
+			USB_BUS.insert(UsbBus::new(usb))
+		};
 
 		// Start a serial communication.
-		let serial = SerialPort::new(USB_BUS.as_ref().unwrap());
-		let usb_dev = UsbDeviceBuilder::new(USB_BUS.as_ref().unwrap(), UsbVidPid(0x16c0, 0x27dd))
+		let serial = SerialPort::new(usb_bus);
+		let usb_dev = UsbDeviceBuilder::new(usb_bus, UsbVidPid(0x16c0, 0x27dd))
 			.manufacturer("The Robot Engineers")
 			.product("USB ADC")
 			.serial_number("TEST")
 			.device_class(USB_CLASS_CDC)
 			.build();
 
-		init::LateResources { usb_dev, serial, led, timer, adc1 }
+		let shared = Shared { usb_dev, serial, led, timer, adc1 };
+		let local = Local {};
+		(shared, local, init::Monotonics {})
 	}
 
-	#[task(binds = ADC1_2, resources = [serial, adc1, led])]
+	#[task(binds = ADC1_2, shared = [serial, usb_dev, adc1, led])]
 	fn adc1_2(cx: adc1_2::Context) {
-		if let Some(data) = cx.resources.adc1.read() {
-			cx.resources.serial.write(&data.to_le_bytes()).unwrap();
-			cx.resources.led.set_high().ok();
+		if let Some(data) = cx.shared.adc1.read() {
+			cx.shared.serial.write(&data.to_le_bytes()).unwrap();
+			cx.shared.led.set_high();
 		}
 	}
 
-	#[task(binds = TIM2, resources = [serial, led, adc1, timer])]
+	#[task(binds = TIM2, shared = [serial, led, adc1, timer])]
 	fn timer2(cx: timer2::Context) {
-		cx.resources.adc1.start_convert();
-		cx.resources.led.set_low().ok();
-		cx.resources.timer.clear_update_interrupt_flag();
+		cx.shared.adc1.start_convert();
+		cx.shared.led.set_low();
+		cx.shared.timer.clear_update_interrupt_flag();
 	}
 
-	#[task(binds = USB_HP_CAN_TX, resources = [usb_dev, serial, led])]
+	#[task(binds = USB_HP_CAN_TX, shared = [usb_dev, serial, led])]
 	fn usb_hp(cx: usb_hp::Context) {
 		let mut buffer = [0; 128];
-		while cx.resources.serial.read(&mut buffer).is_ok() {}
-		cx.resources.usb_dev.poll(&mut [cx.resources.serial]);
+		while cx.shared.serial.read(&mut buffer).is_ok() {}
+		cx.shared.usb_dev.poll(&mut [cx.shared.serial]);
 	}
 
-	#[task(binds = USB_LP_CAN_RX0, resources = [usb_dev, serial, led])]
+	#[task(binds = USB_LP_CAN_RX0, shared = [usb_dev, serial, led])]
 	fn usb_lp(cx: usb_lp::Context) {
 		let mut buffer = [0; 128];
-		while cx.resources.serial.read(&mut buffer).is_ok() {}
-		cx.resources.usb_dev.poll(&mut [cx.resources.serial]);
+		while cx.shared.serial.read(&mut buffer).is_ok() {}
+		cx.shared.usb_dev.poll(&mut [cx.shared.serial]);
 	}
-};
+}
