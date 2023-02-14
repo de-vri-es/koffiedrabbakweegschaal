@@ -7,7 +7,7 @@ edition = "2018"
 cortex-m-rtic = "1.0.0"
 cortex-m = "0.7.0"
 cortex-m-semihosting = "0.3.7"
-cortex-m-rt = "0.7.0"
+cortex-m-rt = "0.7.3"
 embedded-hal = "0.2.6"
 stm32f1xx-hal = { version = "0.8.0", features = ["rt", "stm32f103", "medium", "stm32-usbd"] }
 usbd-serial = "0.1.1"
